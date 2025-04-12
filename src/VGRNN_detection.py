@@ -111,7 +111,7 @@ for k in range(1000):
     nn.utils.clip_grad_norm_(model.parameters(), clip)
     
     if k>=tst_after:
-        _, _, enc_means, _, _ = model(x_in[seq_end:seq_len]
+        _, _, enc_means, _, _, z_t = model(x_in[seq_end:seq_len]
                                       , edge_idx_list[seq_end:seq_len]
                                       , adj_label_l[seq_end:seq_len]
                                       , hidden_st)
