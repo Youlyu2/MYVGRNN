@@ -1,53 +1,20 @@
-#!/usr/bin/env python
-# coding: utf-8
+import os
+import time
 
-# In[1]:
-
-
-#importing libraries
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import math
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils
 import torch.utils.data
-from torchvision import datasets, transforms
-from torch.autograd import Variable
-import matplotlib.pyplot as plt 
-from scipy.ndimage import rotate
-from torch.distributions.uniform import Uniform
-from torch.distributions.normal import Normal
-# from torch_geometric import nn as tgnn
-from utils import load_data
-from utils import preprocess_graph, construct_feed_dict, sparse_to_tuple, mask_test_edges
-import scipy.sparse as sp
-from scipy.linalg import block_diag
-from torch.nn.parameter import Parameter
-from torch.nn.modules.module import Module
-import tarfile
-import torch.nn.functional as F
-import copy
-import time
-from torch_scatter import scatter_mean, scatter_max, scatter_add
-from torch_geometric.utils import remove_self_loops, add_self_loops
-from torch_geometric.datasets import Planetoid
-import networkx as nx
-import scipy.io as sio
-import torch_scatter
-import inspect
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics import average_precision_score
-import copy
-import pickle
-import os
-
 from model import VGRNN
-from utils import mask_edges_det, get_roc_scores
+from torch.autograd import Variable
+
+# from torch_geometric import nn as tgnn
+from utils import (
+    get_roc_scores,
+    mask_edges_det,
+)
 
 topic = 'edca/cumulative'
 
@@ -56,39 +23,11 @@ np.random.seed(seed)
 
 # utility functions
 
-# In[20]:
-
-
-# loading data
-
-# # Enron dataset
-# with open('data/enron10/adj_time_list.pickle', 'rb') as handle:
-#     adj_time_list = pickle.load(handle)
-
-# with open('data/enron10/adj_orig_dense_list.pickle', 'rb') as handle:
-#     adj_orig_dense_list = pickle.load(handle)
-
-
-# # COLAB dataset
-# with open('data/dblp/adj_time_list.pickle', 'rb') as handle:
-#     adj_time_list = pickle.load(handle)
-
-# with open('data/dblp/adj_orig_dense_list.pickle', 'rb') as handle:
-#     adj_orig_dense_list = pickle.load(handle)
-
-# Facebook dataset
-# with open('data/fb/adj_time_list.pt', 'rb') as handle:
-#     adj_time_list = pickle.load(handle, encoding='latin1')
 adj_time_list = torch.load(f'../data/{topic}/adj_time_list.pt', weights_only=False)
 
 # with open('data/fb/adj_orig_dense_list_torch.pickle', 'rb') as handle:
 #     adj_orig_dense_list = pickle.load(handle)
 adj_orig_dense_list = torch.load(f'../data/{topic}/adj_orig_dense_list.pt')
-
-
-
-
-# In[21]:
 
 
 # masking edges
@@ -102,21 +41,12 @@ val_edges_false_l = outs[3]
 test_edges_l = outs[4]
 test_edges_false_l = outs[5]
 
-
-# In[22]:
-
-
 # creating edge list
 
 edge_idx_list = []
 
 for i in range(len(train_edges_l)):
     edge_idx_list.append(torch.tensor(np.transpose(train_edges_l[i]), dtype=torch.long))
-
-
-
-
-# In[26]:
 
 
 # hyperparameters
@@ -134,9 +64,6 @@ eps = 1e-10
 conv_type='GCN'
 
 
-# In[27]:
-
-
 # creating input tensors
 
 x_in_list = []
@@ -152,16 +79,10 @@ for i in range(len(adj_train_l)):
     adj_label_l.append(torch.tensor(temp_matrix.toarray().astype(np.float32)))
 
 
-# In[28]:
-
-
 # building model
 
 model = VGRNN(x_dim, h_dim, z_dim, n_layers, eps, conv=conv_type, bias=True)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-
-# In[29]:
 
 
 # training
@@ -180,7 +101,7 @@ ap_scores_det_test_rec= []
 for k in range(1000):
     optimizer.zero_grad()
     start_time = time.time()
-    kld_loss, nll_loss, _, _, hidden_st = model(x_in[seq_start:seq_end]
+    kld_loss, nll_loss, _, _, hidden_st, z_t = model(x_in[seq_start:seq_end]
                                                 , edge_idx_list[seq_start:seq_end]
                                                 , adj_orig_dense_list[seq_start:seq_end])
     loss = kld_loss + nll_loss
@@ -231,10 +152,8 @@ for k in range(1000):
     print('----------------------------------')
 
 
-import matplotlib.pyplot as plt
+
 import seaborn as sns
-import pandas as pd
-import os
 
 # Set style
 sns.set_style("whitegrid")
