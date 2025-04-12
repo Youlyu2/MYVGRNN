@@ -1,3 +1,4 @@
+# %%
 import os
 import time
 
@@ -5,16 +6,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.utils
 import torch.utils.data
-from model import VGRNN
+from model import VGRNN, NodeClassifier
 from torch.autograd import Variable
+from torchmetrics.classification import MulticlassF1Score
 
 # from torch_geometric import nn as tgnn
 from utils import (
     get_roc_scores,
     mask_edges_det,
 )
+
+# %%
 
 topic = 'edca/cumulative'
 
@@ -29,7 +34,10 @@ adj_time_list = torch.load(f'../data/{topic}/adj_time_list.pt', weights_only=Fal
 #     adj_orig_dense_list = pickle.load(handle)
 adj_orig_dense_list = torch.load(f'../data/{topic}/adj_orig_dense_list.pt')
 
+metadata = torch.load(f'../data/{topic}/metadata.pt', weights_only=False)
+id2label = torch.tensor(metadata['id2label'])
 
+# %%
 # masking edges
 
 outs = mask_edges_det(adj_time_list)
@@ -45,10 +53,13 @@ test_edges_false_l = outs[5]
 
 edge_idx_list = []
 
+print(f"train_edges_l: {train_edges_l}")
+
 for i in range(len(train_edges_l)):
     edge_idx_list.append(torch.tensor(np.transpose(train_edges_l[i]), dtype=torch.long))
 
-
+print(f"edge_idx_list: {edge_idx_list}")
+# %%
 # hyperparameters
 
 h_dim = 32
@@ -78,11 +89,19 @@ for i in range(len(adj_train_l)):
     temp_matrix = adj_train_l[i] 
     adj_label_l.append(torch.tensor(temp_matrix.toarray().astype(np.float32)))
 
-
+# %%
 # building model
 
 model = VGRNN(x_dim, h_dim, z_dim, n_layers, eps, conv=conv_type, bias=True)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+num_classes = int(3)  # 假设 label 从 1 开始
+classifier = NodeClassifier(in_dim=z_dim, num_classes=num_classes)
+clf_optimizer = torch.optim.Adam(classifier.parameters(), lr=1e-2)
+
+f1_macro_metric = MulticlassF1Score(num_classes=num_classes, average='macro')
+f1_micro_metric = MulticlassF1Score(num_classes=num_classes, average='micro')
+
 
 
 # training
@@ -100,13 +119,26 @@ ap_scores_det_test_rec= []
 
 for k in range(1000):
     optimizer.zero_grad()
+    clf_optimizer.zero_grad()
     start_time = time.time()
     kld_loss, nll_loss, _, _, hidden_st, z_t = model(x_in[seq_start:seq_end]
                                                 , edge_idx_list[seq_start:seq_end]
                                                 , adj_orig_dense_list[seq_start:seq_end])
+    z_last = z_t[-1]  # shape: [num_nodes, z_dim]
+    logits = classifier(z_last)
+    #TODO: check z_t 的逻辑
+    # 取 labeled node 的交叉熵损失
+    # pick the labeled nodes
+    labeled_nodes = torch.where(metadata['id2label'] is not None)[0]
+    # calculate the loss
+    clf_loss = F.cross_entropy(logits[labeled_nodes], (id2label[labeled_nodes] - 1))
+
+    # 总 loss
+    loss = kld_loss + nll_loss + 0.1 * clf_loss
     loss = kld_loss + nll_loss
     loss.backward()
     optimizer.step()
+    clf_optimizer.step()
     
     nn.utils.clip_grad_norm_(model.parameters(), clip)
     

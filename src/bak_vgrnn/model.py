@@ -313,10 +313,3 @@ class VGRNN(nn.Module):
         nll_loss = -1 * norm * torch.mean(nll_loss_mat, dim=[0,1])
         return - nll_loss
     
-class NodeClassifier(nn.Module):
-    def __init__(self, in_dim, num_classes):
-        super().__init__()
-        self.linear = nn.Linear(in_dim, num_classes)
-
-    def forward(self, z):
-        return self.linear(z)

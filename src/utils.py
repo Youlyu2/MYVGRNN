@@ -1,40 +1,20 @@
 import math
+import pickle as pkl
+
+import networkx as nx
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.utils
-import torch.utils.data
-from torchvision import datasets, transforms
-from torch.autograd import Variable
-import matplotlib.pyplot as plt 
-from scipy.ndimage import rotate
-from torch.distributions.uniform import Uniform
-from torch.distributions.normal import Normal
+
 # from torch_geometric import nn as tgnn
 import scipy.sparse as sp
-from scipy.linalg import block_diag
-from torch.nn.parameter import Parameter
-from torch.nn.modules.module import Module
-import tarfile
-import torch.nn.functional as F
-import copy
-import time
-from torch_scatter import scatter_mean, scatter_max, scatter_add
-from torch_geometric.utils import remove_self_loops, add_self_loops
-from torch_geometric.datasets import Planetoid
-import networkx as nx
-import scipy.io as sio
-import torch_scatter
-import inspect
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics import average_precision_score
-import copy
-import pickle
-import os
-
-from torch_geometric.nn import GCNConv, SAGEConv, GINConv
-from torch_geometric.utils import train_test_split_edges
+import torch
+import torch.utils
+import torch.utils.data
+from sklearn.metrics import average_precision_score, roc_auc_score
 from torch_geometric.data import Data
+from torch_geometric.utils import (
+    train_test_split_edges,
+)
+
 
 def uniform(size, tensor):
     stdv = 1.0 / math.sqrt(size)
@@ -77,6 +57,39 @@ def tuple_to_array(lot):
         out = np.vstack((out, np.array(list(lot[i]))))
     
     return out
+
+
+def parse_index_file(filename):
+    index = []
+    for line in open(filename):
+        index.append(int(line.strip()))
+    return index
+
+
+def load_data(dataset):
+    # load the data: x, tx, allx, graph
+    names = ['x', 'tx', 'allx', 'graph']
+    objects = []
+    for i in range(len(names)):
+        objects.append(pkl.load(open("data/ind.{}.{}".format(dataset, names[i]))))
+    x, tx, allx, graph = tuple(objects)
+    test_idx_reorder = parse_index_file("data/ind.{}.test.index".format(dataset))
+    test_idx_range = np.sort(test_idx_reorder)
+
+    if dataset == 'citeseer':
+        # Fix citeseer dataset (there are some isolated nodes in the graph)
+        # Find isolated nodes, add them as zero-vecs into the right position
+        test_idx_range_full = range(min(test_idx_reorder), max(test_idx_reorder)+1)
+        tx_extended = sp.lil_matrix((len(test_idx_range_full), x.shape[1]))
+        tx_extended[test_idx_range-min(test_idx_range), :] = tx
+        tx = tx_extended
+
+    features = sp.vstack((allx, tx)).tolil()
+    features[test_idx_reorder, :] = features[test_idx_range, :]
+    adj = nx.adjacency_matrix(nx.from_dict_of_lists(graph))
+
+    return adj, features
+
 
 # masking functions
 
@@ -314,8 +327,6 @@ def get_roc_scores(edges_pos, edges_neg, adj_orig_dense_list, embs):
 
     return auc_scores, ap_scores
 
-import numpy as np
-import scipy.sparse as sp
 
 
 def sparse_to_tuple(sparse_mx):
@@ -425,40 +436,3 @@ def mask_test_edges(adj):
 
     # NOTE: these edge lists only contain single direction of edge!
     return adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false
-
-import numpy as np
-import pickle as pkl
-import networkx as nx
-import scipy.sparse as sp
-
-
-def parse_index_file(filename):
-    index = []
-    for line in open(filename):
-        index.append(int(line.strip()))
-    return index
-
-
-def load_data(dataset):
-    # load the data: x, tx, allx, graph
-    names = ['x', 'tx', 'allx', 'graph']
-    objects = []
-    for i in range(len(names)):
-        objects.append(pkl.load(open("data/ind.{}.{}".format(dataset, names[i]))))
-    x, tx, allx, graph = tuple(objects)
-    test_idx_reorder = parse_index_file("data/ind.{}.test.index".format(dataset))
-    test_idx_range = np.sort(test_idx_reorder)
-
-    if dataset == 'citeseer':
-        # Fix citeseer dataset (there are some isolated nodes in the graph)
-        # Find isolated nodes, add them as zero-vecs into the right position
-        test_idx_range_full = range(min(test_idx_reorder), max(test_idx_reorder)+1)
-        tx_extended = sp.lil_matrix((len(test_idx_range_full), x.shape[1]))
-        tx_extended[test_idx_range-min(test_idx_range), :] = tx
-        tx = tx_extended
-
-    features = sp.vstack((allx, tx)).tolil()
-    features[test_idx_reorder, :] = features[test_idx_range, :]
-    adj = nx.adjacency_matrix(nx.from_dict_of_lists(graph))
-
-    return adj, features
