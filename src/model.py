@@ -159,7 +159,7 @@ class InnerProductDecoder(nn.Module):
 # VGRNN model
 
 class VGRNN(nn.Module):
-    def __init__(self, x_dim, h_dim, z_dim, n_layers, eps, conv='GCN', bias=False):
+    def __init__(self, x_dim, h_dim, z_dim, n_layers, eps, conv='GCN', bias=False, num_classes=2):
         super(VGRNN, self).__init__()
         
         self.x_dim = x_dim
@@ -167,6 +167,7 @@ class VGRNN(nn.Module):
         self.h_dim = h_dim
         self.z_dim = z_dim
         self.n_layers = n_layers
+        self.node_classifier = NodeClassifier(z_dim, num_classes)
         
         if conv == 'GCN':
             self.phi_x = nn.Sequential(nn.Linear(x_dim, h_dim), nn.ReLU())
@@ -268,8 +269,9 @@ class VGRNN(nn.Module):
             all_prior_std.append(prior_std_t_sl)
             all_dec_t.append(dec_t_sl)
             all_z_t.append(z_t)
-        
-        return kld_loss, nll_loss, all_enc_mean, all_prior_mean, h, all_z_t
+
+        node_logits = self.node_classifier(all_z_t[-1])  # shape: [num_nodes, num_classes]
+        return kld_loss, nll_loss, all_enc_mean, all_prior_mean, h, all_z_t, node_logits
     
     def dec(self, z):
         outputs = InnerProductDecoder(act=lambda x:x)(z)

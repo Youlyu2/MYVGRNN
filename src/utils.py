@@ -10,6 +10,8 @@ import torch
 import torch.utils
 import torch.utils.data
 from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+
 from torch_geometric.data import Data
 from torch_geometric.utils import (
     train_test_split_edges,
@@ -92,6 +94,20 @@ def load_data(dataset):
 
 
 # masking functions
+
+def get_labeled_nodes(metadata, device='cpu'):
+    label_tensor = torch.tensor(metadata['id2label'], dtype=torch.long, device=device)
+    is_gt_tensor = torch.tensor(metadata['id2is_gt'], dtype=torch.long, device=device)
+    
+    # 条件：标签是 0（opposing）或 2（supportive），并且是 ground truth
+    mask = ((label_tensor == 0) | (label_tensor == 2)) & (is_gt_tensor == 1)
+    labeled_nodes = torch.where(mask)[0]
+
+    # 将标签从 [0, 2] 转成 [0, 1] （即 0: opposing, 1: supportive）
+    labels = label_tensor[labeled_nodes]
+    labels = (labels == 2).long()  # 2 → 1, 0 → 0
+
+    return labeled_nodes, labels
 
 def mask_edges_det(adjs_list):
     adj_train_l, train_edges_l, val_edges_l = [], [], []
@@ -326,6 +342,39 @@ def get_roc_scores(edges_pos, edges_neg, adj_orig_dense_list, embs):
         ap_scores.append(average_precision_score(labels_all, preds_all))
 
     return auc_scores, ap_scores
+
+
+
+def get_node_classification_scores(logits, labels, labeled_nodes):
+    """
+    logits: [N, num_classes] — raw classifier output
+    labels: [num_labeled_nodes] — ground truth labels
+    labeled_nodes: [num_labeled_nodes] — indices of nodes to evaluate
+    """
+    preds = torch.argmax(logits[labeled_nodes], dim=1).cpu().numpy()
+    true = labels.cpu().numpy()
+
+    original_preds = preds.copy()
+    reversed_preds = torch.tensor([1 - p for p in preds])
+
+    origin_res = {
+        'accuracy': accuracy_score(true, original_preds),
+        'precision': precision_score(true, original_preds, average='binary'),
+        'recall': recall_score(true, original_preds, average='binary'),
+        'f1': f1_score(true, original_preds, average='binary')
+    }
+
+    reversed_res = {
+        'accuracy': accuracy_score(true, reversed_preds),
+        'precision': precision_score(true, reversed_preds, average='binary'),
+        'recall': recall_score(true, reversed_preds, average='binary'),
+        'f1': f1_score(true, reversed_preds, average='binary')
+    }
+    if origin_res['f1'] > reversed_res['f1']:
+        return origin_res
+    else:
+        return reversed_res
+
 
 
 

@@ -9,12 +9,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils
 import torch.utils.data
-from model import VGRNN, NodeClassifier
+from model import VGRNN
 from torch.autograd import Variable
-from torchmetrics.classification import MulticlassF1Score
 
 # from torch_geometric import nn as tgnn
 from utils import (
+    get_labeled_nodes,
+    get_node_classification_scores,
     get_roc_scores,
     mask_edges_det,
 )
@@ -35,7 +36,12 @@ adj_time_list = torch.load(f'../data/{topic}/adj_time_list.pt', weights_only=Fal
 adj_orig_dense_list = torch.load(f'../data/{topic}/adj_orig_dense_list.pt')
 
 metadata = torch.load(f'../data/{topic}/metadata.pt', weights_only=False)
-id2label = torch.tensor(metadata['id2label'])
+
+labeled_nodes, labels = get_labeled_nodes(metadata)
+print("labels dtype:", labels.dtype)
+print("labels shape:", labels.shape)
+print("labels (sample):", labels[:10])
+print("label range:", labels.min().item(), labels.max().item())
 
 # %%
 # masking edges
@@ -95,14 +101,6 @@ for i in range(len(adj_train_l)):
 model = VGRNN(x_dim, h_dim, z_dim, n_layers, eps, conv=conv_type, bias=True)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-num_classes = int(3)  # 假设 label 从 1 开始
-classifier = NodeClassifier(in_dim=z_dim, num_classes=num_classes)
-clf_optimizer = torch.optim.Adam(classifier.parameters(), lr=1e-2)
-
-f1_macro_metric = MulticlassF1Score(num_classes=num_classes, average='macro')
-f1_micro_metric = MulticlassF1Score(num_classes=num_classes, average='micro')
-
-
 
 # training
 
@@ -112,6 +110,7 @@ tst_after = 0
 
 # plot training curves and test results
 losses_rec = []
+f1_scores_node_cls_rec = []
 auc_scores_det_val_rec = []
 ap_scores_det_val_rec = []
 auc_scores_det_test_rec = []
@@ -119,31 +118,25 @@ ap_scores_det_test_rec= []
 
 for k in range(1000):
     optimizer.zero_grad()
-    clf_optimizer.zero_grad()
     start_time = time.time()
-    kld_loss, nll_loss, _, _, hidden_st, z_t = model(x_in[seq_start:seq_end]
+    kld_loss, nll_loss, _, _, hidden_st, z_t, node_logits = model(x_in[seq_start:seq_end]
                                                 , edge_idx_list[seq_start:seq_end]
                                                 , adj_orig_dense_list[seq_start:seq_end])
-    z_last = z_t[-1]  # shape: [num_nodes, z_dim]
-    logits = classifier(z_last)
     #TODO: check z_t 的逻辑
-    # 取 labeled node 的交叉熵损失
     # pick the labeled nodes
-    labeled_nodes = torch.where(metadata['id2label'] is not None)[0]
     # calculate the loss
-    clf_loss = F.cross_entropy(logits[labeled_nodes], (id2label[labeled_nodes] - 1))
+    # print("node_logits", node_logits)
+    clf_loss = F.cross_entropy(node_logits[labeled_nodes], labels)
 
     # 总 loss
     loss = kld_loss + nll_loss + 0.1 * clf_loss
-    loss = kld_loss + nll_loss
     loss.backward()
     optimizer.step()
-    clf_optimizer.step()
     
     nn.utils.clip_grad_norm_(model.parameters(), clip)
     
     if k>=tst_after:
-        _, _, enc_means, _, _, z_t = model(x_in[seq_end:seq_len]
+        _, _, enc_means, _, _, z_t, node_logits = model(x_in[seq_end:seq_len]
                                       , edge_idx_list[seq_end:seq_len]
                                       , adj_label_l[seq_end:seq_len]
                                       , hidden_st)
@@ -158,14 +151,20 @@ for k in range(1000):
                                                                 , adj_orig_dense_list[seq_end:seq_len]
                                                                 , enc_means)
         
+        # node classification
+        cls_metrics = get_node_classification_scores(node_logits, labels, labeled_nodes)
+        
+        
     
     print('epoch: ', k)
     print('kld_loss =', kld_loss.mean().item())
     print('nll_loss =', nll_loss.mean().item())
     print('loss =', loss.mean().item())
+    print('clf_loss =', clf_loss.mean().item())
     if k>=tst_after:
         print('----------------------------------')
         print('Link Detection')
+        print('f1_score_node_cls =', cls_metrics['f1'])
         print('val_link_det_auc_mean', np.mean(np.array(auc_scores_det_val)))
         print('val_link_det_ap_mean', np.mean(np.array(ap_scores_det_val)))
         print('test_link_det_auc_mean', np.mean(np.array(auc_scores_det_test)))
@@ -173,6 +172,7 @@ for k in range(1000):
         print('----------------------------------')
 
     losses_rec.append(loss.mean().item())
+    f1_scores_node_cls_rec.append(cls_metrics['f1'])
     auc_scores_det_test_rec.append(np.mean(np.array(auc_scores_det_test)))
     ap_scores_det_test_rec.append(np.mean(np.array(ap_scores_det_tes)))
     auc_scores_det_val_rec.append(np.mean(np.array(auc_scores_det_val)))
@@ -207,6 +207,8 @@ color = 'tab:blue'
 ax2.set_ylabel('AUC / AP Score', color=color, fontsize=12)
 
 # Plot metrics with different styles
+f1_cls_line = ax2.plot(f1_scores_node_cls_rec, color='tab:red', linestyle='--',
+                        label='F1 Score', linewidth=2, alpha=0.8)
 val_auc_line = ax2.plot(auc_scores_det_val_rec, color='tab:blue', linestyle='--', 
                        label='Val AUC', linewidth=2, alpha=0.8)
 val_ap_line = ax2.plot(ap_scores_det_val_rec, color='tab:green', linestyle='--', 
@@ -217,7 +219,7 @@ test_ap_line = ax2.plot(ap_scores_det_test_rec, color='tab:green',
                        label='Test AP', linewidth=2, alpha=0.8)
 
 # Combine legends from both axes
-lines = loss_line + val_auc_line + val_ap_line + test_auc_line + test_ap_line
+lines = loss_line + f1_cls_line + val_auc_line + val_ap_line + test_auc_line + test_ap_line
 labels = [l.get_label() for l in lines]
 ax1.legend(lines, labels, loc='upper center', bbox_to_anchor=(0.5, -0.15),
           ncol=3, fontsize=10)
