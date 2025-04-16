@@ -68,23 +68,20 @@ class graph_gru_sage(nn.Module):
                 self.weight_hh.append(SAGEConv(hidden_size, hidden_size, bias=bias))
     
     def forward(self, inp, edgidx, h):
-        h_out = torch.zeros(h.size())
+        h_out = []
+
         for i in range(self.n_layer):
-            if i==0:
-                z_g = torch.sigmoid(self.weight_xz[i](inp, edgidx) + self.weight_hz[i](h[i], edgidx))
-                r_g = torch.sigmoid(self.weight_xr[i](inp, edgidx) + self.weight_hr[i](h[i], edgidx))
-                h_tilde_g = torch.tanh(self.weight_xh[i](inp, edgidx) + self.weight_hh[i](r_g * h[i], edgidx))
-                h_out[i] = z_g * h[i] + (1 - z_g) * h_tilde_g
-        #         out = self.decoder(h_t.view(1,-1))
-            else:
-                z_g = torch.sigmoid(self.weight_xz[i](h_out[i-1], edgidx) + self.weight_hz[i](h[i], edgidx))
-                r_g = torch.sigmoid(self.weight_xr[i](h_out[i-1], edgidx) + self.weight_hr[i](h[i], edgidx))
-                h_tilde_g = torch.tanh(self.weight_xh[i](h_out[i-1], edgidx) + self.weight_hh[i](r_g * h[i], edgidx))
-                h_out[i] = z_g * h[i] + (1 - z_g) * h_tilde_g
-        #         out = self.decoder(h_t.view(1,-1))
-        
-        out = h_out
-        return out, h_out
+            h_prev = inp if i == 0 else h_out[i - 1]
+
+            z_g = torch.sigmoid(self.weight_xz[i](h_prev, edgidx) + self.weight_hz[i](h[i], edgidx))
+            r_g = torch.sigmoid(self.weight_xr[i](h_prev, edgidx) + self.weight_hr[i](h[i], edgidx))
+            h_tilde_g = torch.tanh(self.weight_xh[i](h_prev, edgidx) + self.weight_hh[i](r_g * h[i], edgidx))
+            h_i_out = z_g * h[i] + (1 - z_g) * h_tilde_g
+
+            h_out.append(h_i_out)
+
+        h_out = torch.stack(h_out, dim=0)
+        return h_out
 
 
 class graph_gru_gcn(nn.Module):
@@ -119,23 +116,20 @@ class graph_gru_gcn(nn.Module):
                 self.weight_hh.append(GCNConv(hidden_size, hidden_size, bias=bias))
     
     def forward(self, inp, edgidx, h):
-        h_out = torch.zeros(h.size())
+        h_out = []
+
         for i in range(self.n_layer):
-            if i==0:
-                z_g = torch.sigmoid(self.weight_xz[i](inp, edgidx) + self.weight_hz[i](h[i], edgidx))
-                r_g = torch.sigmoid(self.weight_xr[i](inp, edgidx) + self.weight_hr[i](h[i], edgidx))
-                h_tilde_g = torch.tanh(self.weight_xh[i](inp, edgidx) + self.weight_hh[i](r_g * h[i], edgidx))
-                h_out[i] = z_g * h[i] + (1 - z_g) * h_tilde_g
-        #         out = self.decoder(h_t.view(1,-1))
-            else:
-                z_g = torch.sigmoid(self.weight_xz[i](h_out[i-1], edgidx) + self.weight_hz[i](h[i], edgidx))
-                r_g = torch.sigmoid(self.weight_xr[i](h_out[i-1], edgidx) + self.weight_hr[i](h[i], edgidx))
-                h_tilde_g = torch.tanh(self.weight_xh[i](h_out[i-1], edgidx) + self.weight_hh[i](r_g * h[i], edgidx))
-                h_out[i] = z_g * h[i] + (1 - z_g) * h_tilde_g
-        #         out = self.decoder(h_t.view(1,-1))
-        
-        out = h_out
-        return out, h_out
+            h_prev = inp if i == 0 else h_out[i - 1]
+
+            z_g = torch.sigmoid(self.weight_xz[i](h_prev, edgidx) + self.weight_hz[i](h[i], edgidx))
+            r_g = torch.sigmoid(self.weight_xr[i](h_prev, edgidx) + self.weight_hr[i](h[i], edgidx))
+            h_tilde_g = torch.tanh(self.weight_xh[i](h_prev, edgidx) + self.weight_hh[i](r_g * h[i], edgidx))
+            h_i_out = z_g * h[i] + (1 - z_g) * h_tilde_g
+
+            h_out.append(h_i_out)
+
+        h_out = torch.stack(h_out, dim=0)
+        return h_out
 
 
 class InnerProductDecoder(nn.Module):
@@ -214,25 +208,27 @@ class VGRNN(nn.Module):
             
             self.rnn = graph_gru_gcn(h_dim + h_dim, h_dim, n_layers, bias)  
     
-    def forward(self, x, edge_idx_list, adj_orig_dense_list, hidden_in=None):
+    def forward(self, x, edge_idx_list, adj_orig_dense_list, train_nodes, y, hidden_in=None):
         assert len(adj_orig_dense_list) == len(edge_idx_list)
         
         kld_loss = 0
         nll_loss = 0
+        cls_loss = 0
         all_enc_mean, all_enc_std = [], []
         all_prior_mean, all_prior_std = [], []
         all_dec_t, all_z_t = [], []
         
         if hidden_in is None:
-            h = Variable(torch.zeros(self.n_layers, x.size(1), self.h_dim))
+            h = torch.zeros(self.n_layers, x.size(1), self.h_dim)
         else:
-            h = Variable(hidden_in)
+            h = hidden_in.clone()
         
         for t in range(x.size(0)):
             phi_x_t = self.phi_x(x[t])
             
             #encoder
-            enc_t = self.enc(torch.cat([phi_x_t, h[-1]], 1), edge_idx_list[t])
+
+            enc_t = self.enc(torch.cat([phi_x_t, h[-1]], dim=1), edge_idx_list[t])
             enc_mean_t = self.enc_mean(enc_t, edge_idx_list[t])
             enc_std_t = self.enc_act(self.enc_std(enc_t, edge_idx_list[t]))
             
@@ -249,7 +245,7 @@ class VGRNN(nn.Module):
             dec_t = self.dec(z_t)
             
             #recurrence
-            _, h = self.rnn(torch.cat([phi_x_t, phi_z_t], 1), edge_idx_list[t], h)
+            h = self.rnn(torch.cat([phi_x_t, phi_z_t], 1), edge_idx_list[t], h)
             
             nnodes = adj_orig_dense_list[t].size()[0]
             enc_mean_t_sl = enc_mean_t[0:nnodes, :]
@@ -262,6 +258,8 @@ class VGRNN(nn.Module):
 #             kld_loss += self._kld_gauss_zu(enc_mean_t, enc_std_t)
             kld_loss += self._kld_gauss(enc_mean_t_sl, enc_std_t_sl, prior_mean_t_sl, prior_std_t_sl)
             nll_loss += self._nll_bernoulli(dec_t_sl, adj_orig_dense_list[t])
+
+            cls_loss += F.cross_entropy(z_t[train_nodes[t]], y[t][train_nodes[t]]-1)
             
             all_enc_std.append(enc_std_t_sl)
             all_enc_mean.append(enc_mean_t_sl)
@@ -269,9 +267,9 @@ class VGRNN(nn.Module):
             all_prior_std.append(prior_std_t_sl)
             all_dec_t.append(dec_t_sl)
             all_z_t.append(z_t)
-
-        node_logits = self.node_classifier(all_z_t[-1])  # shape: [num_nodes, num_classes]
-        return kld_loss, nll_loss, all_enc_mean, all_prior_mean, h, all_z_t, node_logits
+        
+        # node_logits = self.node_classifier(all_z_t[-1])  # shape: [num_nodes, num_classes]
+        return kld_loss, nll_loss, cls_loss, all_enc_mean, all_prior_mean, h, all_z_t#, node_logits
     
     def dec(self, z):
         outputs = InnerProductDecoder(act=lambda x:x)(z)
@@ -286,7 +284,6 @@ class VGRNN(nn.Module):
     
     def _reparameterized_sample(self, mean, std):
         eps1 = torch.FloatTensor(std.size()).normal_()
-        eps1 = Variable(eps1)
         return eps1.mul(std).add_(mean)
     
     def _kld_gauss(self, mean_1, std_1, mean_2, std_2):

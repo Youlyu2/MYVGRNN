@@ -11,7 +11,13 @@ import torch.utils
 import torch.utils.data
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-
+from torchmetrics.classification import (
+    BinaryAveragePrecision,
+    BinaryF1Score,
+    MulticlassAccuracy,
+    MulticlassAveragePrecision,
+    MulticlassF1Score,
+)
 from torch_geometric.data import Data
 from torch_geometric.utils import (
     train_test_split_edges,
@@ -131,17 +137,6 @@ def mask_edges_det(adjs_list):
         tmp_data = Data(edge_index=torch.LongTensor(edges_all.T), num_nodes=adj.shape[0])
         split_data = train_test_split_edges(tmp_data, val_ratio=0.05, test_ratio=0.1)
 
-        # num_test = int(np.floor(edges.shape[0] / 10.))
-        # num_val = int(np.floor(edges.shape[0] / 20.))
-        
-        # all_edge_idx = list(range(edges.shape[0]))
-        # np.random.shuffle(all_edge_idx)
-        # val_edge_idx = all_edge_idx[:num_val]
-        # test_edge_idx = all_edge_idx[num_val:(num_val + num_test)]
-        # test_edges = edges[test_edge_idx]
-        # val_edges = edges[val_edge_idx]
-        # train_edges = np.delete(edges, np.hstack([test_edge_idx, val_edge_idx]), axis=0)
-
         train_edges = np.array(split_data.train_pos_edge_index.T.tolist())
         val_edges = np.array(split_data.val_pos_edge_index.T.tolist())
         test_edges = np.array(split_data.test_pos_edge_index.T.tolist())
@@ -152,8 +147,6 @@ def mask_edges_det(adjs_list):
         def ismember(a, b, tol=5):
             rows_close = np.all(np.round(a - b[:, None], tol) == 0, axis=-1)
             return np.any(rows_close)
-
-    
 
         assert ~ismember(test_edges_false, edges_all)
         assert ~ismember(val_edges_false, edges_all)
@@ -314,15 +307,15 @@ def mask_edges_prd_new(adjs_list, adj_orig_dense_list):
 
 def get_roc_scores(edges_pos, edges_neg, adj_orig_dense_list, embs):
     def sigmoid(x):
-        return 1 / (1 + np.exp(-x))
+        return torch.sigmoid(x)
     
     auc_scores = []
     ap_scores = []
     
     for i in range(len(edges_pos)):
         # Predict on test set of edges
-        emb = embs[i].detach().numpy()
-        adj_rec = np.dot(emb, emb.T)
+        emb = embs[i].detach()
+        adj_rec = torch.matmul(emb, emb.T)
         adj_orig_t = adj_orig_dense_list[i]
         preds = []
         pos = []
@@ -345,35 +338,27 @@ def get_roc_scores(edges_pos, edges_neg, adj_orig_dense_list, embs):
 
 
 
-def get_node_classification_scores(logits, labels, labeled_nodes):
+def get_node_classification_scores(logits, labels):
     """
     logits: [N, num_classes] — raw classifier output
     labels: [num_labeled_nodes] — ground truth labels
     labeled_nodes: [num_labeled_nodes] — indices of nodes to evaluate
     """
-    preds = torch.argmax(logits[labeled_nodes], dim=1).cpu().numpy()
-    true = labels.cpu().numpy()
+    all_metrics = {}
+    all_metrics['Acc(micro)'] = MulticlassAccuracy(num_classes=2, average='micro')
+    all_metrics['Acc(macro)'] = MulticlassAccuracy(num_classes=2, average='macro')
+    all_metrics['Acc(weighted)'] = MulticlassAccuracy(num_classes=2, average='weighted')
+    all_metrics['AP(macro)'] = MulticlassAveragePrecision(num_classes=2, average='macro')
+    all_metrics['AP(weighted)'] = MulticlassAveragePrecision(num_classes=2, average='weighted')
+    all_metrics['F1(micro)'] = MulticlassF1Score(num_classes=2, average='micro')
+    all_metrics['F1(macro)'] = MulticlassF1Score(num_classes=2, average='macro')
+    all_metrics['F1(weighted)'] = MulticlassF1Score(num_classes=2, average='weighted')
+    to_compare = 'F1(micro)'
+    results = {}
+    for k, v in all_metrics.items():
+        results[k] = v(logits, labels).item()
+    return results, results[to_compare]
 
-    original_preds = preds.copy()
-    reversed_preds = torch.tensor([1 - p for p in preds])
-
-    origin_res = {
-        'accuracy': accuracy_score(true, original_preds),
-        'precision': precision_score(true, original_preds, average='binary'),
-        'recall': recall_score(true, original_preds, average='binary'),
-        'f1': f1_score(true, original_preds, average='binary')
-    }
-
-    reversed_res = {
-        'accuracy': accuracy_score(true, reversed_preds),
-        'precision': precision_score(true, reversed_preds, average='binary'),
-        'recall': recall_score(true, reversed_preds, average='binary'),
-        'f1': f1_score(true, reversed_preds, average='binary')
-    }
-    if origin_res['f1'] > reversed_res['f1']:
-        return origin_res
-    else:
-        return reversed_res
 
 
 
